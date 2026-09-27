@@ -20,12 +20,13 @@ func TestCloseFile_ReportsCloseErrorWhenNoEarlierError(t *testing.T) {
 	}
 }
 
-func TestCloseFile_KeepsEarlierError(t *testing.T) {
+func TestCloseFile_JoinsEarlierError(t *testing.T) {
 	writeErr := errors.New("write failed")
+	closeErr := errors.New("close failed")
 	err := writeErr
-	closeFile(stubCloser{err: errors.New("close failed")}, &err)
-	if !errors.Is(err, writeErr) {
-		t.Fatalf("err = %v, want the earlier %v", err, writeErr)
+	closeFile(stubCloser{err: closeErr}, &err)
+	if !errors.Is(err, writeErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("err = %v, want both write and close errors", err)
 	}
 }
 
