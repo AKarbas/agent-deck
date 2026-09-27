@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Errors from closing files after writing (queues, logs, lock files, update plans) are now reported instead of ignored, so a failed flush is no longer silent.
+
 ## [1.16.21] - 2026-09-27
 
 ### Added
