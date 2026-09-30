@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A deliberately stopped session stays stopped during startup grace instead of turning into an error when a status refresher sees its removed tmux session.
+
 ## [1.16.22] - 2026-09-28
 
 - **Upgrading:** if you reach `agent-deck web` through a reverse proxy or Tailscale Serve, add its host name to `[web] allowed_hosts` before upgrading (or pass `--allowed-host`); otherwise the web UI answers it with 421.

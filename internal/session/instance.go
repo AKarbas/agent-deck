@@ -6267,6 +6267,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	defer i.persistLastActivity(false)
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	// A deliberate stop is authoritative until Start or Restart changes the
+	// status. In particular, startup grace must not turn it into starting.
+	if i.Status == StatusStopped {
+		return nil
+	}
 
 	// Short grace period for tmux initialization (not Claude startup)
 	// Use lastStartTime for accuracy on restarts, fallback to CreatedAt
