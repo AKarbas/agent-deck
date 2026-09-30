@@ -6359,8 +6359,20 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		return nil
 	}
 
-	// Session exists again (user manually started it) - clear stopped status
+	// A cached positive tmux hit may outlive Kill(). Confirm a stopped
+	// session directly before treating it as started again.
 	if i.Status == StatusStopped {
+		s := i.tmuxSession
+		i.mu.Unlock()
+		live := tmux.HasSessionOnSocket(s.SocketName, s.Name)
+		i.mu.Lock()
+		if i.tmuxSession != s || i.Status != StatusStopped {
+			return nil
+		}
+		if !live {
+			i.lastErrorCheck = time.Now()
+			return nil
+		}
 		i.Status = StatusRunning
 	}
 
