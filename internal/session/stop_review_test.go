@@ -132,7 +132,12 @@ func TestReviewStop_ManualTmuxRestartIsDetected(t *testing.T) {
 	inst.lastErrorCheck = time.Time{}
 	inst.mu.Unlock()
 	require.NoError(t, inst.UpdateStatus())
-	require.True(t, isLiveSessionStatus(inst.GetStatusThreadSafe()))
+	require.NotEqual(t, StatusStopped, inst.GetStatusThreadSafe())
+	// tmux can report starting until the interactive prompt is ready.
+	require.Eventually(t, func() bool {
+		_ = inst.UpdateStatus()
+		return isLiveSessionStatus(inst.GetStatusThreadSafe())
+	}, 10*time.Second, 50*time.Millisecond)
 }
 
 func TestReviewStop_NilTmuxDuringGrace(t *testing.T) {
