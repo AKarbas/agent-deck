@@ -5398,9 +5398,6 @@ func (i *Instance) Start() error {
 	// After 5s grace period, status will be properly detected from tmux
 	if command != "" {
 		i.Status = StatusStarting
-	} else if i.Status == StatusStopped {
-		// Starting an interactive shell also clears a deliberate stop.
-		i.Status = StatusRunning
 	}
 
 	// Start async session ID detection for OpenCode
@@ -6270,12 +6267,6 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	defer i.persistLastActivity(false)
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	// A deliberate stop is authoritative until Start or Restart changes the
-	// status. In particular, startup grace must not turn it into starting.
-	if i.Status == StatusStopped {
-		return nil
-	}
-
 	// Short grace period for tmux initialization (not Claude startup)
 	// Use lastStartTime for accuracy on restarts, fallback to CreatedAt
 	graceTime := i.lastStartTime
@@ -6289,7 +6280,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil {
-			if i.Status != StatusRunning && i.Status != StatusIdle {
+			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
 				i.Status = StatusStarting
 			}
 			return nil
@@ -6301,7 +6292,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 		checkedExists = true
 		if !exists {
-			if i.Status != StatusRunning && i.Status != StatusIdle {
+			if i.Status != StatusRunning && i.Status != StatusIdle && i.Status != StatusStopped {
 				i.Status = StatusStarting
 			}
 			return nil
