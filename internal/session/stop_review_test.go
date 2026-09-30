@@ -115,3 +115,24 @@ func TestReviewStop_ConcurrentKillInvalidatesPositiveProbe(t *testing.T) {
 	}
 	require.Equal(t, StatusStopped, inst.GetStatusThreadSafe())
 }
+
+func TestReviewStop_ManualTmuxRestartIsDetected(t *testing.T) {
+	skipIfNoTmuxBinary(t)
+	inst := NewInstanceWithTool("review-manual-restart", t.TempDir(), "shell")
+	require.NoError(t, inst.Start())
+	t.Cleanup(func() { _ = inst.Kill() })
+	require.NoError(t, inst.Kill())
+	// Recreate the same named session without using Instance.Start.
+	require.NoError(t, inst.tmuxSession.Start(""))
+	inst.mu.Lock()
+	inst.lastErrorCheck = time.Time{}
+	inst.mu.Unlock()
+	require.NoError(t, inst.UpdateStatus())
+	require.True(t, isLiveSessionStatus(inst.GetStatusThreadSafe()))
+}
+
+func TestReviewStop_NilTmuxDuringGrace(t *testing.T) {
+	inst := &Instance{Status: StatusStopped, CreatedAt: time.Now()}
+	require.NoError(t, inst.UpdateStatus())
+	require.Equal(t, StatusStopped, inst.GetStatusThreadSafe())
+}

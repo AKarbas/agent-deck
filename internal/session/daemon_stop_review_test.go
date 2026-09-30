@@ -29,6 +29,7 @@ func TestDaemonPreservesPersistedStopAfterLiveSample(t *testing.T) {
 	require.NoError(t, storage.SaveWithGroups([]*Instance{inst}, nil))
 
 	d := NewTransitionDaemon()
+	t.Cleanup(d.Flush)
 	d.storages[profile] = storage
 	d.syncProfile(profile)
 	prior, ok := d.livePrior[profile][inst.ID]
