@@ -53,6 +53,10 @@ has-session)
  fi
  case "$STOP_REVIEW_MODE" in
  gate)
+  if [ -f "$STOP_REVIEW_DIR/entered" ]; then
+   echo "can't find session: stopped" >&2
+   exit 1
+  fi
   touch "$STOP_REVIEW_DIR/entered"
   while [ ! -f "$STOP_REVIEW_DIR/released" ]; do sleep 0.01; done
   exit 0;;
