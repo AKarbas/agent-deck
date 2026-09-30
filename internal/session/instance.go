@@ -674,6 +674,9 @@ type Instance struct {
 	// Not serialized - only relevant for current TUI session
 	lastStartTime time.Time
 
+	// stopRevision is guarded by mu and invalidates unlocked liveness probes.
+	stopRevision uint64
+
 	// tmuxFlipFromRunningPending debounces a purely tmux-inferred flip AWAY from
 	// running (→ waiting/error). A long single tool-call (past the hook freshness
 	// window) or transient subprocess churn can momentarily present the pane as a
@@ -5391,14 +5394,19 @@ func (i *Instance) Start() error {
 	i.CaptureLoadedMCPs()
 
 	// Record start time for grace period (prevents error flash during tmux startup)
+	i.mu.Lock()
 	i.lastStartTime = time.Now()
 	i.markStarted() // persisted stamp (issue #30 — cross-process freshness guard)
+	i.lastErrorCheck = time.Time{}
 
-	// New sessions start as STARTING - shows they're initializing
-	// After 5s grace period, status will be properly detected from tmux
+	// A successful start supersedes the previous stop, including an
+	// interactive shell with no command to initialize.
 	if command != "" {
 		i.Status = StatusStarting
+	} else if i.Status == StatusStopped {
+		i.Status = StatusIdle
 	}
+	i.mu.Unlock()
 
 	// Start async session ID detection for OpenCode
 	// This runs in background and captures the session ID once OpenCode creates it
@@ -6252,11 +6260,11 @@ func (i *Instance) UpdateStatus() error {
 // wait for a busy server, so status readers must not wait behind this probe.
 func (i *Instance) probeTmuxExists() (exists, current bool) {
 	s := i.tmuxSession
-	status := i.Status
+	stopRevision := i.stopRevision
 	i.mu.Unlock()
 	exists = s.Exists()
 	i.mu.Lock()
-	return exists, i.tmuxSession == s && (status == StatusStopped || i.Status != StatusStopped)
+	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
 }
 
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
@@ -6363,13 +6371,14 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// session directly before treating it as started again.
 	if i.Status == StatusStopped {
 		s := i.tmuxSession
+		stopRevision := i.stopRevision
 		i.mu.Unlock()
-		live := tmux.HasSessionOnSocket(s.SocketName, s.Name)
+		live, err := s.ProbeExists()
 		i.mu.Lock()
-		if i.tmuxSession != s || i.Status != StatusStopped {
+		if i.tmuxSession != s || i.Status != StatusStopped || i.stopRevision != stopRevision {
 			return nil
 		}
-		if !live {
+		if err != nil || !live {
 			i.lastErrorCheck = time.Now()
 			return nil
 		}
@@ -9592,6 +9601,7 @@ func (i *Instance) killInternal(sync bool) error {
 		}
 	}
 	i.Status = StatusStopped
+	i.stopRevision++
 	// A deliberate stop releases any auth hold: the session's whole runtime state
 	// is being discarded, and the next start is by definition a user act — the
 	// same intent the hold is waiting for. Without this, a session that showed a

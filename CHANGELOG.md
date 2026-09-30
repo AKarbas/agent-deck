@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A deliberately stopped session stays stopped during startup grace instead of turning into an error when a status refresher sees its removed tmux session.
+- Deliberately stopped sessions stay stopped through startup grace, concurrent refreshes, and notify-daemon polling. Restart detection requires an exact live tmux session, and starting an interactive shell clears its previous stopped state.
 
 ## [1.16.22] - 2026-09-28
 
