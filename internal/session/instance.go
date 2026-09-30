@@ -5398,6 +5398,9 @@ func (i *Instance) Start() error {
 	// After 5s grace period, status will be properly detected from tmux
 	if command != "" {
 		i.Status = StatusStarting
+	} else if i.Status == StatusStopped {
+		// Starting an interactive shell also clears a deliberate stop.
+		i.Status = StatusRunning
 	}
 
 	// Start async session ID detection for OpenCode
