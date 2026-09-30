@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +16,11 @@ func TestStoppedSessionSurvivesStartupGraceRefresh(t *testing.T) {
 	require.NoError(t, inst.Start())
 	t.Cleanup(func() { _ = inst.Kill() })
 	require.NoError(t, inst.Kill())
-	require.False(t, inst.Exists(), "stop must remove the tmux session")
+	stoppedTmux := func() bool {
+		sess := inst.GetTmuxSession()
+		return tmux.HasSessionOnSocket(sess.SocketName, sess.Name)
+	}
+	require.False(t, stoppedTmux(), "stop must remove the tmux session")
 
 	start := time.Now()
 	for _, at := range []time.Duration{0, 500 * time.Millisecond, 5 * time.Second} {
@@ -25,6 +30,6 @@ func TestStoppedSessionSurvivesStartupGraceRefresh(t *testing.T) {
 		inst.ForceNextStatusCheck()
 		require.NoError(t, inst.UpdateStatus())
 		require.Equalf(t, StatusStopped, inst.GetStatusThreadSafe(), "status at +%s", at)
-		require.Falsef(t, inst.Exists(), "tmux session at +%s", at)
+		require.Falsef(t, stoppedTmux(), "tmux session at +%s", at)
 	}
 }
