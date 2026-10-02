@@ -280,6 +280,7 @@ type Home struct {
 	groupDialog          *GroupDialog          // For creating/renaming groups
 	forkDialog           *ForkDialog           // For forking sessions
 	confirmDialog        *ConfirmDialog        // For confirming destructive actions
+	hookTrustDialog      *HookTrustDialog      // First-use / changed worktree hook approval
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
 	pluginDialog         *PluginDialog         // For managing per-session Claude Code plugins (RFC PLUGIN_ATTACH.md)
@@ -1972,6 +1973,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		groupDialog:               NewGroupDialog(),
 		forkDialog:                NewForkDialog(),
 		confirmDialog:             NewConfirmDialog(),
+		hookTrustDialog:           NewHookTrustDialog(),
 		helpOverlay:               NewHelpOverlay(),
 		mcpDialog:                 NewMCPDialog(),
 		pluginDialog:              NewPluginDialog(),
@@ -6249,8 +6251,23 @@ func (h *Home) logWorker() {
 // should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
 // pane is torn down and their row status is display-frozen, so a poll can only
 // spend a serialized tmux subprocess without changing anything the UI renders.
+//
+// Exception: an archived session that still claims a live status. Archiving a
+// session whose tmux is already gone skips Kill(), so it keeps its last stored
+// status; skipping it forever would count it as running in the header pills.
+// It is polled until UpdateStatus settles it on error/stopped, then skipped.
 func shouldPollStatusInLoop(inst *session.Instance) bool {
-	return inst != nil && !inst.IsArchived()
+	if inst == nil {
+		return false
+	}
+	if !inst.IsArchived() {
+		return true
+	}
+	switch inst.GetStatusThreadSafe() {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle, session.StatusStarting:
+		return true
+	}
+	return false
 }
 
 const fullStatusBatchSize = 32
@@ -8777,6 +8794,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
+	case hookTrustRequestMsg:
+		// Only one prompter call is in flight at a time (NewHookTrustPrompter
+		// serializes), so the dialog is never already open here.
+		if h.hookTrustDialog == nil {
+			h.hookTrustDialog = NewHookTrustDialog()
+		}
+		h.hookTrustDialog.Show(msg.id, msg.reply)
+		h.hookTrustDialog.SetSize(h.width, h.height)
+		return h, nil
+
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
 			return maintenanceCompleteMsg{result: msg.Result}
@@ -9929,6 +9956,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that a hover highlight has outlived its mouse.
 		h.clearDividerHover()
 
+		// A worktree hook approval blocks a background operation; it takes
+		// every key until answered.
+		if h.hookTrustDialog.IsVisible() {
+			h.hookTrustDialog.HandleKey(msg)
+			return h, nil
+		}
+
 		// Handle jump mode input (before modals)
 		if h.jumpMode {
 			return h.handleJumpKey(msg)
@@ -11019,7 +11053,7 @@ func (h *Home) hasModalVisible() bool {
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
-		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
+		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.promptInputDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.codeBlockDialog.IsVisible() ||
 		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() || h.contextPager.IsVisible() ||
@@ -15541,6 +15575,10 @@ func formatSetupWarning(setupErr error) string {
 	if runes := []rune(msg); len(runes) > setupWarningMaxLen {
 		msg = string(runes[:setupWarningMaxLen]) + "…"
 	}
+	// A hook the consent gate skipped did not fail; its message says so.
+	if errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
+		return msg
+	}
 	return "worktree setup script failed: " + msg
 }
 
@@ -18605,6 +18643,7 @@ func (h *Home) updateSizes() {
 	h.newDialog.SetSize(h.width, h.height)
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
+	h.hookTrustDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	if h.sessionSwitcher != nil {
 		// Keep the switcher's viewport current so its standalone centered view
@@ -18675,6 +18714,11 @@ func (h *Home) renderFrame() string {
 					minTerminalWidth, minTerminalHeight,
 				)),
 		)
+	}
+
+	// A pending worktree hook approval is shown above everything else.
+	if h.hookTrustDialog.IsVisible() {
+		return h.hookTrustDialog.View()
 	}
 
 	// Show loading splash during initial session load
@@ -21378,6 +21422,8 @@ type groupRenderStats struct {
 	sessionCount int
 	running      int
 	waiting      int
+	tinted       int
+	tint         string
 }
 
 func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map[string]groupRenderStats {
@@ -21409,11 +21455,21 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 		directSessions := 0
 		directRunning := 0
 		directWaiting := 0
+		directTinted := 0
+		directTint := ""
 		for _, sess := range g.Sessions {
 			if sess.IsArchived() != viewArchived {
 				continue
 			}
 			directSessions++
+			// Same field the session row paints (renderSessionItem), so a
+			// group name and its row can never disagree.
+			if sess.Color != "" {
+				directTinted++
+				if directTint == "" || sess.Color < directTint {
+					directTint = sess.Color
+				}
+			}
 			state, ok := snapshot[sess.ID]
 			status := sess.Status
 			if ok {
@@ -21435,6 +21491,12 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 			entry.sessionCount += directSessions
 			entry.running += directRunning
 			entry.waiting += directWaiting
+			entry.tinted += directTinted
+			// Smallest colour string wins: the walk runs over a map, so a
+			// fixed choice keeps the paint stable when colours differ.
+			if directTint != "" && (entry.tint == "" || directTint < entry.tint) {
+				entry.tint = directTint
+			}
 			stats[ancestor] = entry
 
 			idx := strings.LastIndex(ancestor, "/")
@@ -21563,6 +21625,12 @@ func (h *Home) renderGroupItem(
 
 	// Use precomputed recursive stats (group + descendants) for this render pass.
 	stats := groupStats[group.Path]
+	// A collapsed group hides the session whose name is tinted; carry the tint
+	// to the group name so the signal stays visible. Selected rows keep the
+	// selected style, expanded groups already show the tinted row.
+	if stats.tinted > 0 && !group.Expanded && !selected {
+		nameStyle = nameStyle.Foreground(lipgloss.Color(stats.tint))
+	}
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
 		prefix := ""
